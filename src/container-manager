@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# container-manager — interactive menu for local Docker images and containers.
+# container-manager — interactive menu for local Docker images, containers, and volumes.
 #
 # Requirements:
 #   - Docker on PATH
@@ -154,6 +154,23 @@ remove_image()
     run_cmd docker rmi "${name}"
 }
 
+# list_volumes — every local volume.
+list_volumes()
+{
+    run_cmd docker volume ls
+}
+
+# remove_volume NAME — remove one volume. A volume a container uses is left alone.
+remove_volume()
+{
+    local name="$1"
+    if ! valid_name "${name}"; then
+        printf "Error: volume name is missing or invalid.\n" >&2
+        return 2
+    fi
+    run_cmd docker volume rm "${name}"
+}
+
 # remove_all_containers — force-remove every container, including running ones.
 remove_all_containers()
 {
@@ -191,6 +208,29 @@ remove_all_images()
     fi
     printf "\n==> docker rmi -f <every image>\n\n"
     printf "%s\n" "${ids}" | xargs docker rmi -f || status=$?
+    if [ "${status}" -ne 0 ]; then
+        printf "\nCommand exited with status %s.\n" "${status}"
+    fi
+    if [ "${INTERACTIVE}" -eq 1 ]; then
+        pause
+    fi
+    return "${status}"
+}
+
+# remove_all_volumes — remove every volume. One a container still uses is left in place.
+remove_all_volumes()
+{
+    local ids status=0
+    ids="$(docker volume ls -q)" || return $?
+    if [ -z "${ids}" ]; then
+        printf "\nNo volumes found.\n"
+        if [ "${INTERACTIVE}" -eq 1 ]; then
+            pause
+        fi
+        return 0
+    fi
+    printf "\n==> docker volume rm -f <every volume>\n\n"
+    printf "%s\n" "${ids}" | xargs docker volume rm -f || status=$?
     if [ "${status}" -ne 0 ]; then
         printf "\nCommand exited with status %s.\n" "${status}"
     fi
@@ -245,6 +285,9 @@ Usage: container-manager [options]
   --remove-all-containers   (requires --yes)
   --remove-image NAME       (requires --yes)
   --remove-all-images       (requires --yes)
+  --list-volumes
+  --remove-volume NAME      (requires --yes)
+  --remove-all-volumes      (requires --yes)
   --prune-containers        (requires --yes)
   --prune-images            (requires --yes)
   --prune-unused-images     (requires --yes)
@@ -365,6 +408,20 @@ parse_and_dispatch()
                 set_action remove_all_images
                 shift
                 ;;
+            --list-volumes)
+                set_action list_volumes
+                shift
+                ;;
+            --remove-volume)
+                set_action remove_volume
+                shift
+                take_name "--remove-volume" "$@"
+                shift
+                ;;
+            --remove-all-volumes)
+                set_action remove_all_volumes
+                shift
+                ;;
             --prune-containers)
                 set_action prune_containers
                 shift
@@ -436,6 +493,17 @@ parse_and_dispatch()
             require_yes
             remove_all_images
             ;;
+        list_volumes)
+            list_volumes
+            ;;
+        remove_volume)
+            require_yes
+            remove_volume "${TARGET_NAME}"
+            ;;
+        remove_all_volumes)
+            require_yes
+            remove_all_volumes
+            ;;
         prune_containers)
             require_yes
             prune_containers
@@ -493,21 +561,35 @@ main_menu()
     clear || true
     printf "Container Manager\n"
     printf "=================\n\n"
+    printf "Status\n"
     printf "  1) disk usage\n"
+    printf "\n"
+    printf "Lists\n"
     printf "  2) list images\n"
     printf "  3) list all containers\n"
     printf "  4) list running containers\n"
     printf "  5) list stopped containers\n"
     printf "  6) list dangling images\n"
-    printf "  7) stop a container\n"
-    printf "  8) remove a container\n"
-    printf "  9) remove all containers\n"
-    printf " 10) remove an image\n"
-    printf " 11) remove all images\n"
-    printf " 12) prune stopped containers\n"
-    printf " 13) prune dangling images\n"
-    printf " 14) prune unused images\n"
-    printf " 15) prune unused data\n"
+    printf "  7) list volumes\n"
+    printf "\n"
+    printf "Containers\n"
+    printf "  8) stop a container\n"
+    printf "  9) remove a container\n"
+    printf " 10) remove all containers\n"
+    printf "\n"
+    printf "Images\n"
+    printf " 11) remove an image\n"
+    printf " 12) remove all images\n"
+    printf "\n"
+    printf "Volumes\n"
+    printf " 13) remove a volume\n"
+    printf " 14) remove all volumes\n"
+    printf "\n"
+    printf "Prune\n"
+    printf " 15) prune stopped containers\n"
+    printf " 16) prune dangling images\n"
+    printf " 17) prune unused images\n"
+    printf " 18) prune unused data\n"
     printf "\n"
     printf "  Q) quit\n\n"
     printf "Select an option: "
@@ -544,9 +626,10 @@ main()
                 4) list_running || true ;;
                 5) list_stopped || true ;;
                 6) list_dangling || true ;;
-                7) prompt_then stop_one "Container name or ID" "Stop" || true ;;
-                8) prompt_then remove_container "Container name or ID" "Remove container" || true ;;
-                9)
+                7) list_volumes || true ;;
+                8) prompt_then stop_one "Container name or ID" "Stop" || true ;;
+                9) prompt_then remove_container "Container name or ID" "Remove container" || true ;;
+                10)
                     printf "\n==> docker ps -a\n\n"
                     docker ps -a || true
                     printf "\n"
@@ -556,8 +639,8 @@ main()
                         pause
                     fi
                     ;;
-                10) prompt_then remove_image "Image name or ID" "Remove image" || true ;;
-                11)
+                11) prompt_then remove_image "Image name or ID" "Remove image" || true ;;
+                12)
                     printf "\n==> docker images\n\n"
                     docker images || true
                     printf "\n"
@@ -567,7 +650,18 @@ main()
                         pause
                     fi
                     ;;
-                12)
+                13) prompt_then remove_volume "Volume name" "Remove volume" || true ;;
+                14)
+                    printf "\n==> docker volume ls\n\n"
+                    docker volume ls || true
+                    printf "\n"
+                    if confirm "Remove every volume? A volume a container is still using is left in place."; then
+                        remove_all_volumes || true
+                    else
+                        pause
+                    fi
+                    ;;
+                15)
                     printf "\n==> docker ps -a --filter status=exited\n\n"
                     docker ps -a --filter status=exited || true
                     printf "\n"
@@ -577,7 +671,7 @@ main()
                         pause
                     fi
                     ;;
-                13)
+                16)
                     printf "\n==> docker images --filter dangling=true\n\n"
                     docker images --filter dangling=true || true
                     printf "\n"
@@ -587,12 +681,12 @@ main()
                         pause
                     fi
                     ;;
-                14)
+                17)
                     if confirm "Prune unused images, including tagged images no container uses?"; then
                         prune_unused_images || true
                     fi
                     ;;
-                15)
+                18)
                     if confirm "Prune stopped containers, unused networks, dangling images, and build cache? Volumes are kept."; then
                         prune_system || true
                     fi

@@ -6,7 +6,7 @@
 
 <h1 align="center">Container Manager</h1>
 
-Interactive menu for Docker images and containers on this machine. It lists what is local, including images you pulled and images you built, and it removes or prunes them after confirmation.
+Interactive menu for Docker images, containers, and volumes on this machine. It lists what is local, including images you pulled and images you built, and it removes or prunes them after confirmation.
 
 Destructive actions ask for confirmation in menu mode. Non-interactive flags mirror the menu. Flag mode never prompts.
 
@@ -58,22 +58,37 @@ With no arguments the interactive menu opens. Press `Q` to quit.
 ## Menu
 
 ```text
- 1  disk usage
- 2  list images
- 3  list all containers
- 4  list running containers
- 5  list stopped containers
- 6  list dangling images
- 7  stop a container
- 8  remove a container
- 9  remove all containers
-10  remove an image
-11  remove all images
-12  prune stopped containers
-13  prune dangling images
-14  prune unused images
-15  prune unused data
- Q  quit
+Status
+  1) disk usage
+
+Lists
+  2) list images
+  3) list all containers
+  4) list running containers
+  5) list stopped containers
+  6) list dangling images
+  7) list volumes
+
+Containers
+  8) stop a container
+  9) remove a container
+ 10) remove all containers
+
+Images
+ 11) remove an image
+ 12) remove all images
+
+Volumes
+ 13) remove a volume
+ 14) remove all volumes
+
+Prune
+ 15) prune stopped containers
+ 16) prune dangling images
+ 17) prune unused images
+ 18) prune unused data
+
+  Q) quit
 ```
 
 ## What Each Option Does
@@ -86,15 +101,18 @@ With no arguments the interactive menu opens. Press `Q` to quit.
 | 4      | Lists containers that are running.                                                                                                       |
 | 5      | Lists stopped containers. A stopped-container prune removes these.                                                                       |
 | 6      | Lists dangling images. These are untagged layers a dangling prune removes.                                                               |
-| 7      | Stops one running container. You type the name or ID.                                                                                    |
-| 8      | Removes one container. A running container is left alone.                                                                                |
-| 9      | Lists every container, then removes them all, including ones that are running.                                                           |
-| 10     | Removes one image. An image a container still uses is left in place.                                                                     |
-| 11     | Lists every image, then removes them all, including ones a container is using.                                                           |
-| 12     | Lists stopped containers, then removes them.                                                                                             |
-| 13     | Lists dangling images, then removes them.                                                                                                |
-| 14     | Removes unused images, including tagged images no container uses.                                                                        |
-| 15     | Removes stopped containers, unused networks, dangling images, and the build cache. Volumes stay.                                         |
+| 7      | Lists every local volume.                                                                                                                |
+| 8      | Stops one running container. You type the name or ID.                                                                                    |
+| 9      | Removes one container. A running container is left alone.                                                                                |
+| 10     | Lists every container, then removes them all, including ones that are running.                                                           |
+| 11     | Removes one image. An image a container still uses is left in place.                                                                     |
+| 12     | Lists every image, then removes them all, including ones a container is using.                                                           |
+| 13     | Removes one volume. A volume a container still uses is left in place.                                                                    |
+| 14     | Lists every volume, then removes them. A volume a container is still using is left in place.                                             |
+| 15     | Lists stopped containers, then removes them.                                                                                             |
+| 16     | Lists dangling images, then removes them.                                                                                                |
+| 17     | Removes unused images, including tagged images no container uses.                                                                        |
+| 18     | Removes stopped containers, unused networks, dangling images, and the build cache. Volumes stay.                                         |
 | Q      | Leaves the menu.                                                                                                                         |
 
 ## Flags
@@ -111,6 +129,9 @@ With no arguments the interactive menu opens. Press `Q` to quit.
 --remove-all-containers    requires --yes
 --remove-image NAME        requires --yes
 --remove-all-images        requires --yes
+--list-volumes
+--remove-volume NAME       requires --yes
+--remove-all-volumes       requires --yes
 --prune-containers         requires --yes
 --prune-images             requires --yes
 --prune-unused-images      requires --yes
@@ -125,17 +146,18 @@ With no arguments the interactive menu opens. Press `Q` to quit.
 
 ## Complete Purge
 
-Stop every container, then delete the containers and everything linked to them: images, volumes, unused networks, and the build cache. Predefined networks (`bridge`, `host`, `none`) stay.
+Remove every container, including ones that are running, then every image, then every volume,
+then unused networks, dangling images, and the build cache. Each flag is one run. `--yes` is
+required. A volume a container is still using is left in place, so the container step comes
+first.
 
-> **Note:** This cannot be undone. Named volumes go too.
+> **Note:** This cannot be undone. Volumes go too. Predefined networks (`bridge`, `host`, `none`) stay.
 
 ```bash
-docker ps -q | while read -r id; do docker stop "${id}"; done
-docker ps -aq | while read -r id; do docker rm -f "${id}"; done
-docker images -aq | while read -r id; do docker rmi -f "${id}"; done
-docker volume ls -q | while read -r id; do docker volume rm "${id}"; done
-docker network prune --force
-docker builder prune --all --force
+./src/container-manager --remove-all-containers --yes
+./src/container-manager --remove-all-images --yes
+./src/container-manager --remove-all-volumes --yes
+./src/container-manager --prune --yes
 ```
 
 <a href="https://github.com/the-lupaxa-project">
