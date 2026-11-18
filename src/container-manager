@@ -1,0 +1,616 @@
+#!/usr/bin/env bash
+#
+# container-manager — interactive menu for local Docker images and containers.
+#
+# Requirements:
+#   - Docker on PATH
+#   - Bash (macOS /bin/bash 3.2+ is fine)
+#
+# Usage:
+#   ./src/container-manager           # interactive menu
+#   ./src/container-manager --help    # flags
+#
+
+set -euo pipefail
+
+# 1 = menu mode (pause after commands); 0 = flag mode (no pauses)
+INTERACTIVE=1
+YES=0
+ACTION=""
+TARGET_NAME=""
+
+# pause — wait for Enter before returning to the menu; exit 0 on EOF.
+pause()
+{
+    printf "\nPress Enter to continue..."
+    if ! read -r _; then
+        printf "\nEOF; exiting.\n"
+        exit 0
+    fi
+}
+
+# confirm MESSAGE — return 0 on y/yes, 1 otherwise (default N).
+confirm()
+{
+    local answer
+    printf "%s [y/N]: " "$1"
+    read -r answer || true
+    case "${answer}" in
+        y|Y|yes|YES) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# run_cmd ARGS… — print, execute, show status if non-zero; return the command status.
+run_cmd()
+{
+    local status=0
+    printf "\n==> %s\n\n" "$*"
+    "$@" || status=$?
+    if [ "${status}" -ne 0 ]; then
+        printf "\nCommand exited with status %s.\n" "${status}"
+    fi
+    if [ "${INTERACTIVE}" -eq 1 ]; then
+        pause
+    fi
+    return "${status}"
+}
+
+# check_docker — ensure docker is on PATH.
+check_docker()
+{
+    if ! command -v docker >/dev/null 2>&1; then
+        printf "Error: docker was not found in PATH.\n" >&2
+        exit 1
+    fi
+}
+
+# valid_name NAME — reject empty names, leading dashes, and whitespace.
+valid_name()
+{
+    case "$1" in
+        ""|-*|*[[:space:]]*)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+# prompt_name LABEL — read one image or container name. Empty is not an error.
+prompt_name()
+{
+    local value
+    printf "%s: " "$1"
+    read -r value || true
+    printf "%s\n" "${value}"
+}
+
+# list_images — local images, including ones that were built here.
+list_images()
+{
+    run_cmd docker images
+}
+
+# list_containers — every container, including stopped ones.
+list_containers()
+{
+    run_cmd docker ps -a
+}
+
+# list_running — containers that are running.
+list_running()
+{
+    run_cmd docker ps
+}
+
+# list_stopped — containers a stopped-container prune would remove.
+list_stopped()
+{
+    run_cmd docker ps -a --filter status=exited
+}
+
+# list_dangling — untagged images a dangling prune would remove.
+list_dangling()
+{
+    run_cmd docker images --filter dangling=true
+}
+
+# disk_usage — reclaimable space reported by Docker.
+disk_usage()
+{
+    run_cmd docker system df
+}
+
+# stop_one NAME — stop a running container.
+stop_one()
+{
+    local name="$1"
+    if ! valid_name "${name}"; then
+        printf "Error: container name is missing or invalid.\n" >&2
+        return 2
+    fi
+    run_cmd docker stop "${name}"
+}
+
+# remove_container NAME — remove a container. A running container is left alone.
+remove_container()
+{
+    local name="$1"
+    if ! valid_name "${name}"; then
+        printf "Error: container name is missing or invalid.\n" >&2
+        return 2
+    fi
+    run_cmd docker rm "${name}"
+}
+
+# remove_image NAME — remove an image. An image in use is left alone.
+remove_image()
+{
+    local name="$1"
+    if ! valid_name "${name}"; then
+        printf "Error: image name is missing or invalid.\n" >&2
+        return 2
+    fi
+    run_cmd docker rmi "${name}"
+}
+
+# remove_all_containers — force-remove every container, including running ones.
+remove_all_containers()
+{
+    local ids status=0
+    ids="$(docker ps -aq)" || return $?
+    if [ -z "${ids}" ]; then
+        printf "\nNo containers found.\n"
+        if [ "${INTERACTIVE}" -eq 1 ]; then
+            pause
+        fi
+        return 0
+    fi
+    printf "\n==> docker rm -f <every container>\n\n"
+    printf "%s\n" "${ids}" | xargs docker rm -f || status=$?
+    if [ "${status}" -ne 0 ]; then
+        printf "\nCommand exited with status %s.\n" "${status}"
+    fi
+    if [ "${INTERACTIVE}" -eq 1 ]; then
+        pause
+    fi
+    return "${status}"
+}
+
+# remove_all_images — force-remove every image, including ones a container uses.
+remove_all_images()
+{
+    local ids status=0
+    ids="$(docker images -aq)" || return $?
+    if [ -z "${ids}" ]; then
+        printf "\nNo images found.\n"
+        if [ "${INTERACTIVE}" -eq 1 ]; then
+            pause
+        fi
+        return 0
+    fi
+    printf "\n==> docker rmi -f <every image>\n\n"
+    printf "%s\n" "${ids}" | xargs docker rmi -f || status=$?
+    if [ "${status}" -ne 0 ]; then
+        printf "\nCommand exited with status %s.\n" "${status}"
+    fi
+    if [ "${INTERACTIVE}" -eq 1 ]; then
+        pause
+    fi
+    return "${status}"
+}
+
+# prune_containers — remove stopped containers.
+prune_containers()
+{
+    run_cmd docker container prune -f
+}
+
+# prune_dangling — remove dangling images.
+prune_dangling()
+{
+    run_cmd docker image prune -f
+}
+
+# prune_unused_images — remove images no container uses, including tagged ones.
+prune_unused_images()
+{
+    run_cmd docker image prune -a -f
+}
+
+# prune_system — remove stopped containers, unused networks, dangling images, and build cache.
+# Anonymous volumes are kept.
+prune_system()
+{
+    run_cmd docker system prune -f
+}
+
+# usage — print CLI help to stdout.
+usage()
+{
+    cat <<'EOF'
+Usage: container-manager [options]
+
+  (no options)     Interactive menu
+
+  -h, --help
+  --df
+  --list-images
+  --list-containers
+  --list-running
+  --list-stopped
+  --list-dangling
+  --stop NAME
+  --remove-container NAME   (requires --yes)
+  --remove-all-containers   (requires --yes)
+  --remove-image NAME       (requires --yes)
+  --remove-all-images       (requires --yes)
+  --prune-containers        (requires --yes)
+  --prune-images            (requires --yes)
+  --prune-unused-images     (requires --yes)
+  --prune                    (requires --yes)
+  -y, --yes
+EOF
+}
+
+# require_yes — exit 2 unless --yes / -y was given.
+require_yes()
+{
+    if [ "${YES}" -ne 1 ]; then
+        printf "Error: destructive action requires --yes\n" >&2
+        exit 2
+    fi
+}
+
+# set_action NAME — record the sole action flag; reject a second action.
+set_action()
+{
+    if [ -n "${ACTION}" ]; then
+        printf "Error: only one action flag is allowed per run.\n" >&2
+        usage >&2
+        exit 2
+    fi
+    ACTION="$1"
+}
+
+# take_name FLAG — read the next argument as a name.
+take_name()
+{
+    local flag="$1"
+    shift
+    if [ "$#" -eq 0 ]; then
+        printf "Error: %s requires a NAME.\n" "${flag}" >&2
+        usage >&2
+        exit 2
+    fi
+    case "$1" in
+        -*)
+            printf "Error: %s requires a NAME.\n" "${flag}" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+    TARGET_NAME="$1"
+}
+
+# parse_and_dispatch ARGS… — parse flags and run one action.
+# Returns 1 if no args (caller runs menu); 0 if handled.
+parse_and_dispatch()
+{
+    if [ "$#" -eq 0 ]; then
+        return 1
+    fi
+
+    YES=0
+    ACTION=""
+    TARGET_NAME=""
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -h|--help)
+                set_action help
+                shift
+                ;;
+            -y|--yes)
+                YES=1
+                shift
+                ;;
+            --df)
+                set_action df
+                shift
+                ;;
+            --list-images)
+                set_action list_images
+                shift
+                ;;
+            --list-containers)
+                set_action list_containers
+                shift
+                ;;
+            --list-running)
+                set_action list_running
+                shift
+                ;;
+            --list-stopped)
+                set_action list_stopped
+                shift
+                ;;
+            --list-dangling)
+                set_action list_dangling
+                shift
+                ;;
+            --stop)
+                set_action stop
+                shift
+                take_name "--stop" "$@"
+                shift
+                ;;
+            --remove-container)
+                set_action remove_container
+                shift
+                take_name "--remove-container" "$@"
+                shift
+                ;;
+            --remove-all-containers)
+                set_action remove_all_containers
+                shift
+                ;;
+            --remove-image)
+                set_action remove_image
+                shift
+                take_name "--remove-image" "$@"
+                shift
+                ;;
+            --remove-all-images)
+                set_action remove_all_images
+                shift
+                ;;
+            --prune-containers)
+                set_action prune_containers
+                shift
+                ;;
+            --prune-images)
+                set_action prune_images
+                shift
+                ;;
+            --prune-unused-images)
+                set_action prune_unused_images
+                shift
+                ;;
+            --prune)
+                set_action prune
+                shift
+                ;;
+            *)
+                printf "Error: unknown option: %s\n" "$1" >&2
+                usage >&2
+                exit 2
+                ;;
+        esac
+    done
+
+    if [ -z "${ACTION}" ]; then
+        printf "Error: no action flag given.\n" >&2
+        usage >&2
+        exit 2
+    fi
+
+    case "${ACTION}" in
+        help)
+            usage
+            ;;
+        df)
+            disk_usage
+            ;;
+        list_images)
+            list_images
+            ;;
+        list_containers)
+            list_containers
+            ;;
+        list_running)
+            list_running
+            ;;
+        list_stopped)
+            list_stopped
+            ;;
+        list_dangling)
+            list_dangling
+            ;;
+        stop)
+            stop_one "${TARGET_NAME}"
+            ;;
+        remove_container)
+            require_yes
+            remove_container "${TARGET_NAME}"
+            ;;
+        remove_all_containers)
+            require_yes
+            remove_all_containers
+            ;;
+        remove_image)
+            require_yes
+            remove_image "${TARGET_NAME}"
+            ;;
+        remove_all_images)
+            require_yes
+            remove_all_images
+            ;;
+        prune_containers)
+            require_yes
+            prune_containers
+            ;;
+        prune_images)
+            require_yes
+            prune_dangling
+            ;;
+        prune_unused_images)
+            require_yes
+            prune_unused_images
+            ;;
+        prune)
+            require_yes
+            prune_system
+            ;;
+        *)
+            printf "Error: unhandled action: %s\n" "${ACTION}" >&2
+            exit 2
+            ;;
+    esac
+}
+
+# prompt_then ACTION_FN LABEL CONFIRM — ask for a name, then confirm, then run.
+prompt_then()
+{
+    local action="$1"
+    local label="$2"
+    local question="$3"
+    local name
+
+    name="$(prompt_name "${label}")"
+    if [ -z "${name}" ]; then
+        printf "No name entered.\n"
+        if [ "${INTERACTIVE}" -eq 1 ]; then
+            pause
+        fi
+        return 0
+    fi
+    if ! valid_name "${name}"; then
+        printf "Invalid name: %s\n" "${name}"
+        if [ "${INTERACTIVE}" -eq 1 ]; then
+            pause
+        fi
+        return 0
+    fi
+    if confirm "${question} '${name}'?"; then
+        "${action}" "${name}" || true
+    fi
+}
+
+# main_menu — print the numbered interactive menu.
+main_menu()
+{
+    clear || true
+    printf "Container Manager\n"
+    printf "=================\n\n"
+    printf "  1) disk usage\n"
+    printf "  2) list images\n"
+    printf "  3) list all containers\n"
+    printf "  4) list running containers\n"
+    printf "  5) list stopped containers\n"
+    printf "  6) list dangling images\n"
+    printf "  7) stop a container\n"
+    printf "  8) remove a container\n"
+    printf "  9) remove all containers\n"
+    printf " 10) remove an image\n"
+    printf " 11) remove all images\n"
+    printf " 12) prune stopped containers\n"
+    printf " 13) prune dangling images\n"
+    printf " 14) prune unused images\n"
+    printf " 15) prune unused data\n"
+    printf "\n"
+    printf "  Q) quit\n\n"
+    printf "Select an option: "
+}
+
+# main ARGS… — honour --help before requiring docker; then menu or flag dispatch.
+main()
+{
+    local arg choice
+    for arg in "$@"; do
+        case "${arg}" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+        esac
+    done
+
+    check_docker
+
+    if [ "$#" -eq 0 ]; then
+        INTERACTIVE=1
+        while true; do
+            main_menu
+            if ! read -r choice; then
+                printf "\nEOF; exiting.\n"
+                exit 0
+            fi
+
+            case "${choice}" in
+                1) disk_usage || true ;;
+                2) list_images || true ;;
+                3) list_containers || true ;;
+                4) list_running || true ;;
+                5) list_stopped || true ;;
+                6) list_dangling || true ;;
+                7) prompt_then stop_one "Container name or ID" "Stop" || true ;;
+                8) prompt_then remove_container "Container name or ID" "Remove container" || true ;;
+                9)
+                    printf "\n==> docker ps -a\n\n"
+                    docker ps -a || true
+                    printf "\n"
+                    if confirm "Remove every container, including ones that are running?"; then
+                        remove_all_containers || true
+                    else
+                        pause
+                    fi
+                    ;;
+                10) prompt_then remove_image "Image name or ID" "Remove image" || true ;;
+                11)
+                    printf "\n==> docker images\n\n"
+                    docker images || true
+                    printf "\n"
+                    if confirm "Remove every image, including ones a container is using?"; then
+                        remove_all_images || true
+                    else
+                        pause
+                    fi
+                    ;;
+                12)
+                    printf "\n==> docker ps -a --filter status=exited\n\n"
+                    docker ps -a --filter status=exited || true
+                    printf "\n"
+                    if confirm "Prune stopped containers?"; then
+                        prune_containers || true
+                    else
+                        pause
+                    fi
+                    ;;
+                13)
+                    printf "\n==> docker images --filter dangling=true\n\n"
+                    docker images --filter dangling=true || true
+                    printf "\n"
+                    if confirm "Prune dangling images?"; then
+                        prune_dangling || true
+                    else
+                        pause
+                    fi
+                    ;;
+                14)
+                    if confirm "Prune unused images, including tagged images no container uses?"; then
+                        prune_unused_images || true
+                    fi
+                    ;;
+                15)
+                    if confirm "Prune stopped containers, unused networks, dangling images, and build cache? Volumes are kept."; then
+                        prune_system || true
+                    fi
+                    ;;
+                q|Q|quit|QUIT|Quit)
+                    printf "Goodbye.\n"
+                    exit 0
+                    ;;
+                *)
+                    printf "Invalid option: %s\n" "${choice}"
+                    pause
+                    ;;
+            esac
+        done
+    else
+        INTERACTIVE=0
+        parse_and_dispatch "$@"
+    fi
+}
+
+main "$@"
